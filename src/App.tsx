@@ -5,6 +5,7 @@ import { lessons } from './content';
 
 const won = (amount: number) => `${Math.round(amount).toLocaleString('ko-KR')}원`;
 const signed = (amount: number) => `${amount > 0 ? '+' : ''}${won(amount)}`;
+const storageKey = 'allowance-lab-state';
 const navigation = [{ id: 'home', label: '대시보드', icon: LayoutDashboard }, { id: 'ledger', label: '나의 가계부', icon: ReceiptText }, { id: 'plan', label: '투자 계획', icon: Target }, { id: 'invest', label: '모의 투자', icon: TrendingUp }, { id: 'analysis', label: '소비 분석', icon: BarChart3 }, { id: 'learn', label: '금융 교실', icon: BookOpen }];
 const expenseCategories = ['간식비', '교통비', '학용품', '쇼핑', '문화생활', '식비', '기타 지출'];
 const incomeCategories = ['정기 용돈', '추가 용돈', '선물', '기타 수입'];
@@ -35,6 +36,7 @@ export default function App() {
   const [modal, setModal] = useState<Modal>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [localMode, setLocalMode] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [transaction, setTransaction] = useState<Transaction | null>(null);
@@ -52,8 +54,19 @@ export default function App() {
 
   async function load() {
     setLoading(true); setError('');
-    try { const response = await fetch('/api/state'); if (!response.ok) throw new Error('기록을 불러오지 못했어요. 아래에서 다시 시도해주세요.'); setState(await response.json()); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : '연결을 확인해주세요.'); }
+    try {
+      const response = await fetch('/api/state');
+      if (!response.ok) throw new Error('API unavailable');
+      const remoteState = await response.json() as AppState;
+      setState(remoteState);
+      try { localStorage.setItem(storageKey, JSON.stringify(remoteState)); } catch {}
+    } catch {
+      setLocalMode(true);
+      try {
+        const savedState = localStorage.getItem(storageKey);
+        setState(savedState ? JSON.parse(savedState) as AppState : initialState());
+      } catch { setError('기록을 불러오지 못했어요. 브라우저 저장 공간을 확인해주세요.'); }
+    }
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);
@@ -64,10 +77,22 @@ export default function App() {
     setBusy(true); setError('');
     const updated = { ...next, events: [...next.events, { name: event, at: new Date().toISOString() }].slice(-200) };
     try {
-      const response = await fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
-      if (!response.ok) { const body = await response.json(); throw new Error(body.error); }
+      if (!localMode) {
+        const response = await fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
+        if (!response.ok) throw new Error('API unavailable');
+      }
+      localStorage.setItem(storageKey, JSON.stringify(updated));
+      if (!localMode) setLocalMode(false);
       setState(updated); setNotice(message); return true;
-    } catch (failure) { setError(failure instanceof Error ? failure.message : '저장하지 못했어요. 다시 시도해주세요.'); return false; }
+    } catch {
+      if (!localMode) {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(updated));
+          setLocalMode(true); setState(updated); setNotice(message); return true;
+        } catch {}
+      }
+      setError('저장하지 못했어요. 브라우저 저장 공간을 확인해주세요.'); return false;
+    }
     finally { setBusy(false); }
   }
   function openTransaction(type: 'income' | 'expense', existing: Transaction | null = null) { setTransaction(existing); setTransactionType(type); setModal('transaction'); setError(''); }
